@@ -1,0 +1,72 @@
+# Paraméterek
+$sidString = "S-1-5-21-1004336348-1177238915-682003330-512"
+$outputInfFile = "certreq.inf"
+$subject = "CN=YourCommonName,OU=YourOrgUnit,O=YourOrganization,L=YourCity,C=YourCountry"
+$sanValues = @("dnsName=example.com", "email=admin@example.com") # Módosítsd a kívánt SAN értékekre
+
+# SID konvertálása bináris formátumba
+$sid = New-Object System.Security.Principal.SecurityIdentifier($sidString)
+$sidBinary = $sid.BinaryLength
+$sidBytes = New-Object byte[] $sidBinary
+$sid.GetBinaryForm($sidBytes, 0)
+
+# SID DER-kódolású Octet String formátumba (0x04 + hossz + adatok)
+$sidDer = [byte[]]@(0x04) + [byte[]]@($sidBytes.Length) + $sidBytes
+$sidHex = ($sidDer | ForEach-Object { $_.ToString("X2") }) -join ""
+
+# SAN mező ASN.1 DER kódolása
+# Példa: dnsName=example.com, email=admin@example.com
+$sanBytes = [System.Collections.Generic.List[byte]]::new()
+foreach ($san in $sanValues) {
+    if ($san -like "dnsName=*") {
+        $dnsName = $san.Split("=")[1]
+        $dnsBytes = [System.Text.Encoding]::ASCII.GetBytes($dnsName)
+        $sanBytes.Add(0x82) # DNS Name tag
+        $sanBytes.Add($dnsBytes.Length) # Hossz
+        $sanBytes.AddRange($dnsBytes)
+    }
+    elseif ($san -like "email=*") {
+        $email = $san.Split("=")[1]
+        $emailBytes = [System.Text.Encoding]::ASCII.GetBytes($email)
+        $sanBytes.Add(0x81) # RFC822Name (email) tag
+        $sanBytes.Add($emailBytes.Length) # Hossz
+        $sanBytes.AddRange($emailBytes)
+    }
+}
+# SAN mező DER-kódolása: SEQUENCE (0x30) + hossz + tartalom
+$sanSequence = [byte[]]@(0x30) + [byte[]]@($sanBytes.Count) + $sanBytes.ToArray()
+$sanHex = ($sanSequence | ForEach-Object { $_.ToString("X2") }) -join ""
+
+# INF fájl tartalma
+$infContent = @"
+[Version]
+Signature="$Windows NT$"
+
+[NewRequest]
+Subject="$subject"
+KeyLength=2048
+KeyAlgorithm=RSA
+HashAlgorithm=SHA256
+Exportable=TRUE
+MachineKeySet=TRUE
+SMIME=FALSE
+RequestType=PKCS10
+ProviderName="Microsoft RSA SChannel Cryptographic Provider"
+KeyUsage=0xa0
+
+[EnhancedKeyUsageExtension]
+OID=1.3.6.1.4.1.311.10.3.4 ; Encrypting File System
+OID=1.3.6.1.5.5.7.3.2 ; Client Authentication
+OID=1.3.6.1.5.5.7.3.1 ; Server Authentication
+
+[Extensions]
+2.5.29.17 = {octet}$sanHex ; Subject Alternative Name
+1.3.6.1.4.1.311.25.2 = {octet}$sidHex ; szOID_NTDS_OBJECTSID
+"@
+
+# INF fájl mentése
+$infContent | Out-File -FilePath $outputInfFile -Encoding ASCII
+
+Write-Output "INF fájl generálva: $outputInfFile"
+Write-Output "Futtasd a következő parancsot a CSR generálásához:"
+Write-Output "certreq -new $outputInfFile certreq.csr"
